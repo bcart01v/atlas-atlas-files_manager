@@ -93,7 +93,7 @@ class FilesController {
     const parentId = req.query.parentId || '0';
     const page = parseInt(req.query.page, 10) || 0;
     const pageSize = 20;
-    
+
     try {
       const matchQuery = {
         userId: user._id,
@@ -112,6 +112,60 @@ class FilesController {
     } catch (err) {
       console.error('Error retrieving files:', err);
       return res.status(500).json({ error: 'Error retrieving files' });
+    }
+  }
+
+  // PUT /files/:id/publish - Set isPublic to true
+  static async putPublish(req, res) {
+    const user = await UsersController.getUserFromToken(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const fileId = req.params.id;
+    try {
+      const file = await dbClient.db.collection('files').findOne({ _id: new ObjectId(fileId), userId: user._id });
+      if (!file) {
+        return res.status(404).json({ error: 'Not found' });
+      }
+
+      const result = await dbClient.db.collection('files').findOneAndUpdate(
+        { _id: new ObjectId(fileId) },
+        { $set: { isPublic: true } },
+        { returnDocument: 'after' }
+      );
+
+      return res.status(200).json(result.value);
+    } catch (err) {
+      console.error('Error publishing file:', err);
+      return res.status(500).json({ error: 'Error publishing file' });
+    }
+  }
+
+  // PUT /files/:id/unpublish - Set isPublic to false
+  static async putUnpublish(req, res) {
+    const user = await UsersController.getUserFromToken(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const fileId = req.params.id;
+    try {
+      const file = await dbClient.db.collection('files').findOne({ _id: new ObjectId(fileId), userId: user._id });
+      if (!file) {
+        return res.status(404).json({ error: 'Not found' });
+      }
+
+      const result = await dbClient.db.collection('files').findOneAndUpdate(
+        { _id: new ObjectId(fileId) },
+        { $set: { isPublic: false } },
+        { returnDocument: 'after' }
+      );
+
+      return res.status(200).json(result.value);
+    } catch (err) {
+      console.error('Error unpublishing file:', err);
+      return res.status(500).json({ error: 'Error unpublishing file' });
     }
   }
 }
