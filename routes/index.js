@@ -29,4 +29,7 @@ router.get('/files', FilesController.getIndex);
 router.put('/files/:id/publish', FilesController.putPublish);
 router.put('/files/:id/unpblish', FilesController.putUnpublish);
 
+// Endpoint to get file content
+router.get('/files/:id/data', FilesController.getFile);
+
 export default router;

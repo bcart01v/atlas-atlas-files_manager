@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { promises as fs } from 'fs';
 import path from 'path';
+import mime from 'mime-types';
 import dbClient from '../utils/db.js';
 import { ObjectId } from 'mongodb';
 import UsersController from './UsersController.js';
@@ -166,6 +167,46 @@ class FilesController {
     } catch (err) {
       console.error('Error unpublishing file:', err);
       return res.status(500).json({ error: 'Error unpublishing file' });
+    }
+  }
+
+  // GET /files/:id/data - Retrieve file content
+  static async getFile(req, res) {
+    const fileId = req.params.id;
+
+    try {
+      const file = await dbClient.db.collection('files').findOne({ _id: new ObjectId(fileId) });
+      if (!file) {
+        return res.status(404).json({ error: 'Not found' });
+      }
+
+      // Check if file is public or if the user is the owner
+      const user = await UsersController.getUserFromToken(req);
+      const isOwner = user && file.userId.equals(user._id);
+      if (!file.isPublic && !isOwner) {
+        return res.status(404).json({ error: 'Not found' });
+      }
+
+      // Check if the document is a folder, which wont have content...
+      if (file.type === 'folder') {
+        return res.status(400).json({ error: "A folder doesn't have content" });
+      }
+
+      // Check if the file is present locally
+      if (!file.localPath || !(await fs.access(file.localPath).then(() => true).catch(() => false))) {
+        return res.status(404).json({ error: 'Not found' });
+      }
+
+      // Get the MIME type based on the file name
+      const mimeType = mime.lookup(file.name) || 'application/octet-stream';
+
+      // Read the file content and send it with the correct MIME type
+      const data = await fs.readFile(file.localPath);
+      res.setHeader('Content-Type', mimeType);
+      return res.status(200).send(data);
+    } catch (err) {
+      console.error('Error retrieving file content:', err);
+      return res.status(500).json({ error: 'Error retrieving file content' });
     }
   }
 }
