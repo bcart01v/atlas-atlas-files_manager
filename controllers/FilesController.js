@@ -5,8 +5,10 @@ import mime from 'mime-types';
 import dbClient from '../utils/db.js';
 import { ObjectId } from 'mongodb';
 import UsersController from './UsersController.js';
+import Bull from 'bull';
 
 const FOLDER_PATH = process.env.FOLDER_PATH || '/tmp/files_manager';
+const fileQueue = new Bull('fileQueue'); // Create a Bull queue for file processing
 
 class FilesController {
   // POST /files - Upload new file or create folder
@@ -42,12 +44,14 @@ class FilesController {
       name,
       type,
       isPublic,
-      parentId: parentId || 0,
+      parentId: parentId === '0' ? 0 : new ObjectId(parentId),
     };
 
     if (type === 'folder') {
       const result = await dbClient.db.collection('files').insertOne(fileDocument);
-      return res.status(201).json(result.ops[0]);
+      fileDocument.id = result.insertedId.toString();
+      delete fileDocument._id;
+      return res.status(201).json(fileDocument);
     } else {
       // Ensure folder path exists
       await fs.mkdir(FOLDER_PATH, { recursive: true });
@@ -60,7 +64,19 @@ class FilesController {
       fileDocument.localPath = localPath;
 
       const result = await dbClient.db.collection('files').insertOne(fileDocument);
-      return res.status(201).json(result.ops[0]);
+      fileDocument.id = result.insertedId.toString();
+      delete fileDocument._id;
+      delete fileDocument.localPath; // Do not expose localPath
+
+      // Enqueue a job for thumbnail generation if the file is an image
+      if (type === 'image') {
+        await fileQueue.add({
+          userId: user._id.toString(),
+          fileId: result.insertedId.toString(),
+        });
+      }
+
+      return res.status(201).json(fileDocument);
     }
   }
 
@@ -73,10 +89,16 @@ class FilesController {
 
     const fileId = req.params.id;
     try {
-      const file = await dbClient.db.collection('files').findOne({ _id: new ObjectId(fileId), userId: user._id });
+      const file = await dbClient.db.collection('files').findOne({
+        _id: new ObjectId(fileId),
+        userId: user._id,
+      });
       if (!file) {
         return res.status(404).json({ error: 'Not found' });
       }
+      file.id = file._id;
+      delete file._id;
+      delete file.localPath; // Do not expose localPath
       return res.status(200).json(file);
     } catch (err) {
       console.error('Error retrieving file:', err);
@@ -109,6 +131,12 @@ class FilesController {
         ])
         .toArray();
 
+      files.forEach((file) => {
+        file.id = file._id;
+        delete file._id;
+        delete file.localPath; // Do not expose localPath
+      });
+
       return res.status(200).json(files);
     } catch (err) {
       console.error('Error retrieving files:', err);
@@ -132,11 +160,15 @@ class FilesController {
 
       const result = await dbClient.db.collection('files').findOneAndUpdate(
         { _id: new ObjectId(fileId) },
-        { $set: { isPublic: true } },
-        { returnDocument: 'after' }
+        { $set: { isPublic: true } }
       );
 
-      return res.status(200).json(result.value);
+      file.isPublic = true;
+      file.id = file._id;
+      delete file._id;
+      delete file.localPath; // Do not expose localPath
+
+      return res.status(200).json(file);
     } catch (err) {
       console.error('Error publishing file:', err);
       return res.status(500).json({ error: 'Error publishing file' });
@@ -152,18 +184,25 @@ class FilesController {
 
     const fileId = req.params.id;
     try {
-      const file = await dbClient.db.collection('files').findOne({ _id: new ObjectId(fileId), userId: user._id });
+      const file = await dbClient.db.collection('files').findOne({
+        _id: new ObjectId(fileId),
+        userId: user._id,
+      });
       if (!file) {
         return res.status(404).json({ error: 'Not found' });
       }
 
-      const result = await dbClient.db.collection('files').findOneAndUpdate(
+      await dbClient.db.collection('files').updateOne(
         { _id: new ObjectId(fileId) },
-        { $set: { isPublic: false } },
-        { returnDocument: 'after' }
+        { $set: { isPublic: false } }
       );
 
-      return res.status(200).json(result.value);
+      file.isPublic = false;
+      file.id = file._id;
+      delete file._id;
+      delete file.localPath; // Do not expose localPath
+
+      return res.status(200).json(file);
     } catch (err) {
       console.error('Error unpublishing file:', err);
       return res.status(500).json({ error: 'Error unpublishing file' });
@@ -173,9 +212,12 @@ class FilesController {
   // GET /files/:id/data - Retrieve file content
   static async getFile(req, res) {
     const fileId = req.params.id;
+    const size = req.query.size;
 
     try {
-      const file = await dbClient.db.collection('files').findOne({ _id: new ObjectId(fileId) });
+      const file = await dbClient.db.collection('files').findOne({
+        _id: new ObjectId(fileId),
+      });
       if (!file) {
         return res.status(404).json({ error: 'Not found' });
       }
@@ -187,13 +229,21 @@ class FilesController {
         return res.status(404).json({ error: 'Not found' });
       }
 
-      // Check if the document is a folder, which wont have content...
+      // Check if the document is a folder
       if (file.type === 'folder') {
         return res.status(400).json({ error: "A folder doesn't have content" });
       }
 
-      // Check if the file is present locally
-      if (!file.localPath || !(await fs.access(file.localPath).then(() => true).catch(() => false))) {
+      // Determine the local path based on size
+      let localPath = file.localPath;
+      if (size && ['500', '250', '100'].includes(size)) {
+        localPath = `${file.localPath}_${size}`;
+      }
+
+      // Check if the requested file or thumbnail exists
+      try {
+        await fs.access(localPath);
+      } catch {
         return res.status(404).json({ error: 'Not found' });
       }
 
@@ -201,7 +251,7 @@ class FilesController {
       const mimeType = mime.lookup(file.name) || 'application/octet-stream';
 
       // Read the file content and send it with the correct MIME type
-      const data = await fs.readFile(file.localPath);
+      const data = await fs.readFile(localPath);
       res.setHeader('Content-Type', mimeType);
       return res.status(200).send(data);
     } catch (err) {
