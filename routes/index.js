@@ -27,7 +27,7 @@ router.get('/files', FilesController.getIndex);
 
 // Publishing and unpublishing files
 router.put('/files/:id/publish', FilesController.putPublish);
-router.put('/files/:id/unpblish', FilesController.putUnpublish);
+router.put('/files/:id/unpublish', FilesController.putUnpublish);
 
 // Endpoint to get file content
 router.get('/files/:id/data', FilesController.getFile);
